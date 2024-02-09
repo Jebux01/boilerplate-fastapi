@@ -1,0 +1,67 @@
+version: '3.7'
+
+networks:
+  app-network-public:
+    driver: bridge
+
+volumes:
+  sql-server-data:
+    driver: local
+  sqldata:
+  sqllog:
+  sqlbackup:
+
+
+services:
+  app:
+    container_name: backend
+    networks:
+      - app-network-public
+    environment:
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_SCHEMA: postgres
+      DB_HOST: db
+    build:
+      context: .
+      target: builder
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --workers 4
+    volumes:
+      - .:/usr/src/app
+    ports:
+      - 8000:8000
+
+  # db:
+  #   image: mcr.microsoft.com/mssql/server:2019-CU3-ubuntu-18.04
+  #   container_name: db-sqlserver
+    # networks:
+    #   - app-network-public
+  #   restart: always
+  #   environment:
+  #     - ACCEPT_EULA=Y
+  #     - MSSQL_DATA_DIR=/var/opt/sqlserver/data
+  #     - MSSQL_LOG_DIR=/var/opt/sqlserver/log
+  #     - MSSQL_BACKUP_DIR=/var/opt/sqlserver/backup
+  #     - MSSQL_SA_PASSWORD=Password12345
+  #   ports:
+  #     - '1433:1433'
+  #   volumes:
+  #     - sql-server-data:/var/opt/mssql/
+  #     - sqldata:/var/opt/sqlserver/data
+  #     - sqllog:/var/opt/sqlserver/log
+  #     - sqlbackup:/var/opt/sqlserver/backup
+  #     - /c/docker/shared:/usr/shared
+
+  db:
+    container_name: db
+    image: postgres:13
+    networks:
+      - app-network-public
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - 5432:5432
+    volumes:
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
