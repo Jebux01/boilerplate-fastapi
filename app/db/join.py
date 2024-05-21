@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 from sqlalchemy import Alias, Engine, Select, Table
 from app.exceptions import BadClausesError
-from app.utils.db import build_alias_or_table
+from app.utils.db import build_alias
 
 
 type_join = {
@@ -114,7 +114,7 @@ def build(
 
     for config in tables:
         schema = config.get("schema", "habi_tramite")
-        table_two = build_alias_or_table(config["table"], engine, schema)
+        table_two = build_alias(config["table"], engine, schema)
         tables_object[table_two.name] = table_two
         full, join_type, on_clause = (
             config.get("full", False),

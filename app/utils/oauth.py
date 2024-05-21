@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Annotated, Dict
 
 from fastapi import Depends, HTTPException, status
@@ -7,7 +7,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.config import settings
-from app.schemas.users import UserTokenData, User
+from app.schemas.users import User, UserTokenData
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -23,7 +23,7 @@ def create_access_token(data: Dict):
         str: JWT Generated
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRES_IN)
+    expire = datetime.now(UTC) + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRES_IN)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(
         to_encode,

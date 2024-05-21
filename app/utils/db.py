@@ -2,12 +2,13 @@
 Database utilities.
 """
 
-import os
+from functools import partial
 from typing import Any, Callable
 
 from fastapi import HTTPException, status
 from sqlalchemy import Engine, MetaData, Table
 from sqlalchemy.orm import aliased
+
 from app.config import settings
 
 
@@ -45,7 +46,7 @@ def get_sqlalchemy_table(
     )
 
 
-def build_alias_or_table(
+def build_alias(
     table_name: str,
     engine: Engine,
     schema: str,
@@ -70,14 +71,22 @@ def build_alias_or_table(
         >>> build_alias("my_table my_alias", my_engine, "my_schema")
     """
     split_table = table_name.split(" ")
-    table = get_sqlalchemy_table(
-        table_name=split_table[0], engine=engine, schema=schema
+
+    partial_table = partial(
+        get_sqlalchemy_table,
+        table_name=split_table[0],
+        engine=engine,
+        schema=schema,
     )
+
+    def get_table():
+        return partial_table()
+
+    table = get_table()
     if len(split_table) > 1:
         return aliased(table, name=split_table[-1])
 
     return table
-
 
 def convert_table(engine: Engine) -> Callable:
     """
@@ -93,10 +102,9 @@ def convert_table(engine: Engine) -> Callable:
             """
             Convert the table name to a Table object.
             """
-            kwargs["table_name"] = build_alias_or_table(
-                table_name=kwargs["table_name"],
+            kwargs["table_name"] = get_sqlalchemy_table(
                 engine=engine,
-                schema=kwargs.get("schema", settings.DB_SCHEMA)
+                **kwargs,
             )
 
             return fnx(*args, **kwargs)

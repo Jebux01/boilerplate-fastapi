@@ -24,7 +24,7 @@ from app.db.join import build
 from app.db.paginator import do_response_pag
 from app.db.responses import do_response
 from app.exceptions import SQLExecutionError
-from app.utils.db import build_alias_or_table, convert_table
+from app.utils.db import build_alias, convert_table, get_sqlalchemy_table
 
 logger: Logger = getLogger(__name__)
 
@@ -44,7 +44,7 @@ def sql_exec(fnx: Callable) -> Callable:
         the functions to execute have to return a sqlalchemy.sql.text.TextClause
         """
         if "table_name" in kwargs:
-            kwargs["table_name"] = build_alias_or_table(
+            kwargs["table_name"] = get_sqlalchemy_table(
                 engine=ENGINE,
                 **kwargs,
             )
@@ -55,8 +55,8 @@ def sql_exec(fnx: Callable) -> Callable:
 
 
 def exec_query(
-    query: Select | Update | Insert | Delete | TextClause,
-) -> dict | list | Any:
+    query: Select | Update | Insert | Delete,
+) -> dict | list | CursorResult | Any:
     """
     Execute a SQL query.
 
@@ -69,7 +69,7 @@ def exec_query(
         return do_response(query, conn)
     except SQLExecutionError as e:
         logger.error("Error executing query: %s", e)
-        raise HTTPException(500, detail="Error executing query " + str(e)) from e
+        raise e from e
     finally:
         conn.close()
 
@@ -256,7 +256,11 @@ def join(
 
     >>>    query.where(tables.c.c.Code == "MEX")
     """
-    table = build_alias_or_table(table_name, ENGINE, schema)
+    table = build_alias(
+        table_name=table_name,
+        engine=ENGINE,
+        schema=schema,
+    )
     select_object = sql_select(text(", ".join(columns))).select_from(table)
     select_join, tables = build(
         select_object,
@@ -278,7 +282,7 @@ def paginator(
 
     Args:
         query_object (sqlalchemy.sql.selectable.Select): The SQL query.
-        elements (int): The total items per page.
+        items_per_page (int): The total items per page.
         page (int): The page number.
 
     Returns:
@@ -287,7 +291,7 @@ def paginator(
     Examples:
         >>> paginator(
         ...     query_object=select_generic(table_name="table_name"),
-        ...     elements=10,
+        ...     items_per_page=10,
         ...     page=1
         ... )
         SELECT * FROM table_name LIMIT 10 OFFSET 0
