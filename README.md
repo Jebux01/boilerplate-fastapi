@@ -22,8 +22,8 @@ Con los requerimientos anteriores se logra crear un boilerplate para empeza un p
 ### Technology
 [![forthebadge made-with-python](http://ForTheBadge.com/images/badges/made-with-python.svg)](https://www.python.org/)  
 [![Build Status](https://img.shields.io/badge/build-develop-pass.svg)](https://shields.io/)
-[![Coverage](https://img.shields.io/badge/coverage-process-blue.svg)](https://shields.io/)
-[![Testing](https://img.shields.io/badge/testing-process-blue.svg)](https://shields.io/)
+[![Coverage](https://img.shields.io/badge/coverage-pass-green.svg)](https://shields.io/)
+[![Testing](https://img.shields.io/badge/testing-pass-green.svg)](https://shields.io/)
 
 
 install dependencies

@@ -1,15 +1,14 @@
 """Module to connection DB and generic functions"""
 
+from functools import wraps
 from logging import Logger, getLogger
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, List, Tuple, TypeVar, Mapping
 
-from fastapi import HTTPException, status
 from sqlalchemy import (
     Delete,
     Insert,
     Select,
     Table,
-    TextClause,
     Update,
     delete as sql_delete,
     insert as sql_insert,
@@ -18,8 +17,10 @@ from sqlalchemy import (
     update as sql_update,
 )
 from sqlalchemy import CursorResult
+from sqlalchemy.engine.mock import MockConnection
+from sqlalchemy.orm import Session
 
-from app.db.config import ENGINE
+from app.db.config import connection_manager
 from app.db.join import build
 from app.db.paginator import do_response_pag
 from app.db.responses import do_response
@@ -28,34 +29,83 @@ from app.utils.db import build_alias, convert_table, get_sqlalchemy_table
 
 logger: Logger = getLogger(__name__)
 
+F = TypeVar("F", bound=Callable[..., Any])  # pylint: disable=C0103
 
-def sql_exec(fnx: Callable) -> Callable:
+
+def sql_exec(fnx: Callable = lambda x: x) -> Callable[[F], F] | F:
     """
-    Decorator to execute a SQL query.
+    Decorator to execute a SQL query with optional post-processing.
+
+    This decorator can be used to wrap functions that return SQLAlchemy query objects.
+    It allows for post-processing of the query results by specifying a post-process function.
 
     Args:
-        fnx (Callable): The function to decorate.
+        fnx (Callable, optional): A post-process function to be applied to the query results.
+                                  Defaults to a no-op lambda function.
+
+    Returns:
+        Callable[[F], F] | F: The decorated function, which will execute the SQL query
+                              and optionally apply the post-process function.
     """
 
-    def wrapper(*args, **kwargs) -> dict | list | CursorResult:
+    @wraps(fnx)
+    def new_fnx(*frgs, **fwargs) -> Any:
         """
-        Execute a SQL query.
-        execute the function and this return the query object to execute
-        the functions to execute have to return a sqlalchemy.sql.text.TextClause
-        """
-        if "table_name" in kwargs:
-            kwargs["table_name"] = get_sqlalchemy_table(
-                engine=ENGINE,
-                **kwargs,
-            )
-        query = fnx(*args, **kwargs)
-        return exec_query(query)
+        Inner function that wraps the original function and executes the SQL query.
 
-    return wrapper
+        Args:
+            *frgs: Positional arguments to be passed to the wrapped function.
+            **fwargs: Keyword arguments to be passed to the wrapped function.
+
+        Returns:
+            Any: The result of the SQL query execution, potentially post-processed.
+        """
+
+        def execute(fnx_final: Callable, *args, **kwargs) -> Any:
+            """
+            Execute the SQL query and optionally apply post-processing.
+
+            Args:
+                fnx_final (Callable): The final function to execute.
+                *args: Positional arguments to be passed to the final function.
+                **kwargs: Keyword arguments to be passed to the final function.
+
+            Returns:
+                Any: The result of the SQL query execution, potentially post-processed.
+            """
+            if kwargs.get("table_name"):
+                kwargs["table_name"] = get_sqlalchemy_table(
+                    engine=connection_manager.get_engine("postgresql"),
+                    **kwargs,
+                )
+            query = fnx_final(*args, **kwargs)
+            return exec_query(query)
+
+        if len(frgs) == 1 and len(fwargs) == 0 and callable(frgs[0]):
+
+            def wrapper(*args, **kwargs) -> Any:
+                """
+                Wrapper function that calls the execute function with the given arguments.
+
+                Args:
+                    *args: Positional arguments to be passed to the execute function.
+                    **kwargs: Keyword arguments to be passed to the execute function.
+
+                Returns:
+                    Any: The result of the execute function.
+                """
+                return fnx(execute(frgs[0], *args, **kwargs))
+
+            return wrapper
+
+        return execute(fnx, *frgs, **fwargs)
+
+    return new_fnx
 
 
 def exec_query(
     query: Select | Update | Insert | Delete,
+    post_process: Callable = lambda x: x,
 ) -> dict | list | CursorResult | Any:
     """
     Execute a SQL query.
@@ -63,10 +113,13 @@ def exec_query(
     Args:
         query (Select | Update | Insert | Delete): The query to execute.
     """
-    conn = ENGINE.connect()
+    engine = connection_manager.get_engine("postgresql")
+    conn = engine.connect()
+    if isinstance(conn, MockConnection):
+        conn.close = lambda *_, **__: None
 
     try:
-        return do_response(query, conn)
+        return post_process(do_response(query, conn))
     except SQLExecutionError as e:
         logger.error("Error executing query: %s", e)
         raise e from e
@@ -74,7 +127,7 @@ def exec_query(
         conn.close()
 
 
-@convert_table(ENGINE)
+@convert_table
 def select(  # pylint: disable=W0102
     table_name: Table,
     columns: list = ["*"],
@@ -102,7 +155,7 @@ def select(  # pylint: disable=W0102
     return sql_select(text(", ".join(columns))).select_from(table_name), table_name
 
 
-@convert_table(ENGINE)
+@convert_table
 def update(
     table_name: Table,
     **__,
@@ -127,7 +180,7 @@ def update(
     return sql_update(table=table_name), table_name
 
 
-@convert_table(ENGINE)
+@convert_table
 def insert(
     table_name: Table,
     **__,
@@ -152,7 +205,7 @@ def insert(
     return sql_insert(table=table_name), table_name
 
 
-@convert_table(ENGINE)
+@convert_table
 def delete(
     table_name: Table,
     **__,
@@ -181,7 +234,7 @@ def join(
     table_name: str,
     columns: List[str],
     config: dict,
-    schema: str = "habi_tramite",
+    schema: str = "test",
 ) -> Tuple[Select, Any]:
     """
     This function receives as parameters the name of table principal that use to select_from
@@ -222,6 +275,7 @@ def join(
         columns (List[str]): List of columns to select.
         config (dict): The configuration for the join.
         schema (str, optional): The schema of the tables. Defaults to "habi_tramite".
+        country (str, optional): The country to connect to. Defaults to "CO".
 
     Returns:
         Tuple[sqlalchemy.sql.dml.Select, TablesBase]: SQLAlchemy SELECT object
@@ -256,17 +310,20 @@ def join(
 
     >>>    query.where(tables.c.c.Code == "MEX")
     """
+    engine = connection_manager.get_engine("postgresql")
     table = build_alias(
         table_name=table_name,
-        engine=ENGINE,
+        engine=engine,
         schema=schema,
+        tables=config["tables"],
     )
+
     select_object = sql_select(text(", ".join(columns))).select_from(table)
     select_join, tables = build(
         select_object,
         table,
         config["tables"],
-        ENGINE,
+        engine,
     )
 
     return select_join, tables
@@ -276,6 +333,8 @@ def paginator(
     query_object: Select,
     elements: int = 10,
     page: int = 1,
+    country: str = "CO",
+    **kwargs,
 ) -> dict:
     """
     Paginator for SQL query.
@@ -297,7 +356,9 @@ def paginator(
         SELECT * FROM table_name LIMIT 10 OFFSET 0
     """
 
-    sub = sql_select(text("count(*) AS total_items")).select_from(*query_object.froms)
+    sub = sql_select(text("count(*) AS total_items")).select_from(
+        *query_object.get_final_froms()
+    )
     if query_object.whereclause is None:
         sub = sub.scalar_subquery().label("cnt")
     else:
@@ -305,7 +366,7 @@ def paginator(
 
     query = query_object.add_columns(sub).limit(elements).offset(elements * (page - 1))
 
-    result: list | dict = exec_query(query)  # type: ignore
+    result: list | dict = exec_query(query, country=country, **kwargs)  # type: ignore
     if not result:
         return {
             "items": [],
@@ -316,3 +377,69 @@ def paginator(
         }
 
     return do_response_pag(result, page, elements)
+
+
+def begin_transaction(
+    session_selected: Session,
+    queries: List[Update | Insert],
+    post_process: Callable,
+) -> List:
+    """
+    Begin a transaction and execute a list of queries.
+
+    Args:
+        session_selected (Session): The session to use for the transaction.
+        queries (List[Update | Insert]): A list of queries to execute.
+
+    Returns:
+        list: The results of the queries.
+    """
+
+    def execute_query(session: Session, query: Update | Insert) -> Mapping[str, Any]:
+        result = session.execute(query)
+        if isinstance(query, Insert):
+            return {
+                "id": result.inserted_primary_key[0],  # type: ignore
+                "table": query.table.name,
+                "row_affected": result.rowcount,
+                "query": query,
+            }
+
+        if isinstance(query, Select):
+            return {
+                "row_affected": result.rowcount,
+                "query": query,
+                "result": result.mappings().all(),
+            }
+
+        return {
+            **result.last_updated_params(),  # type: ignore
+            "table": query.table.name,  # type: ignore
+            "row_affected": result.rowcount,
+            "query": query,
+        }
+
+    with session_selected.begin():
+        results = [
+            post_process(execute_query(session_selected, query)) for query in queries
+        ]
+
+    return results
+
+
+def transaction(queries: List[Update | Insert], **kwargs) -> List:
+    """
+    Execute a list of queries in a transaction.
+    A transaction is a set of queries that are executed together.
+    If one of the queries fails, the entire transaction is rolled back.
+    This ensures that the database remains in a consistent state.
+
+    Args:
+        queries (List[Update | Insert]): A list of queries to execute.
+
+    Returns:
+        list: The results of the queries.
+    """
+    session = Session(connection_manager.get_engine("postgresql"))
+    post_process = kwargs.get("post_process", lambda x: x)
+    return begin_transaction(session, queries, post_process)
